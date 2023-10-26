@@ -46,6 +46,13 @@ use smithay::{
     },
     utils::{Clock, Logical, Monotonic, Point, Rectangle, Serial, Time},
     wayland::{
+        color::{
+            management::{
+                ColorManagementHandler, ColorManagementState, Feature, ImageDescription,
+                ImageDescriptionContents, Primaries, RenderIntent, TransferFunction,
+            },
+            representation::{ColorRepresentationHandler, ColorRepresentationState},
+        },
         commit_timing::{CommitTimerBarrierStateUserData, CommitTimingManagerState},
         compositor::{CompositorClientState, CompositorHandler, CompositorState, get_parent, with_states},
         dmabuf::DmabufFeedback,
@@ -166,6 +173,8 @@ pub struct AnvilState<BackendData: Backend + 'static> {
     pub image_capture_source_state: ImageCaptureSourceState,
     pub output_capture_source_state: OutputCaptureSourceState,
     pub image_copy_capture_state: ImageCopyCaptureState,
+    pub color_manager: ColorManagementState,
+    pub color_repr: ColorRepresentationState,
 
     pub dnd_icon: Option<DndIcon>,
 
@@ -596,6 +605,40 @@ impl<BackendData: Backend> XdgForeignHandler for AnvilState<BackendData> {
     }
 }
 
+impl<BackendData: Backend + 'static> ColorManagementHandler for AnvilState<BackendData> {
+    fn color_management_state(&mut self) -> &mut ColorManagementState {
+        &mut self.color_manager
+    }
+
+    fn verify_icc(&mut self, _icc_data: &[u8]) -> bool {
+        false // not supported
+    }
+
+    fn description_for_output(&mut self, _output: &Output) -> ImageDescription {
+        // doesn't matter, vk_hdr_layer never queries this
+        unreachable!()
+    }
+
+    fn preferred_description_for_surface(&mut self, _surface: &WlSurface) -> ImageDescription {
+        // doesn't matter, vk_hdr_layer doesn't care for this
+        self.color_manager
+            .build_description(ImageDescriptionContents::Parametric {
+                tf: TransferFunction::CICP(0),
+                primaries: Primaries::CICP(0),
+                target_primaries: None,
+                target_luminance: None,
+                max_cll: None,
+                max_fall: None,
+            })
+    }
+}
+
+impl<BackendData: Backend + 'static> ColorRepresentationHandler for AnvilState<BackendData> {
+    fn color_representation_state(&mut self) -> &mut ColorRepresentationState {
+        &mut self.color_repr
+    }
+}
+
 impl<BackendData: Backend> ImageCaptureSourceHandler for AnvilState<BackendData> {
     fn source_destroyed(&mut self, _source: ImageCaptureSource) {
         // Anvil doesn't track sources
@@ -747,6 +790,21 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
 
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
 
+        let color_manager = ColorManagementState::new::<Self>(
+            &dh,
+            std::iter::once(RenderIntent::Perceptual),
+            [
+                Feature::SetPrimaries,
+                Feature::SetMasteringDisplayPrimaries,
+                Feature::Parametric,
+                Feature::ExtendedTargetVolume,
+            ]
+            .into_iter(),
+            [8, 16].into_iter(),
+            [1, 9].into_iter(),
+        );
+        let color_repr = ColorRepresentationState::new::<Self>(&dh, std::iter::empty(), std::iter::empty());
+
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = xwayland_shell::XWaylandShellState::new::<Self>(&dh.clone());
 
@@ -783,6 +841,8 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
             image_capture_source_state,
             output_capture_source_state,
             image_copy_capture_state,
+            color_manager,
+            color_repr,
             dnd_icon: None,
             suppressed_keys: Vec::new(),
             cursor_status: CursorImageStatus::default_named(),
