@@ -1,19 +1,23 @@
-mod protocol;
 use wayland_server::{protocol::wl_surface::WlSurface, Dispatch, DisplayHandle, GlobalDispatch, Weak};
 
 use crate::wayland::compositor::{self, Cacheable};
 
-pub use self::protocol::*;
-use self::wp_color_representation_v1::AlphaMode;
+use wayland_protocols::wp::color_representation::v1::server::{
+    wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
+    wp_color_representation_surface_v1::{
+        AlphaMode, ChromaLocation, Coefficients, Range, WpColorRepresentationSurfaceV1,
+    },
+};
 mod dispatch;
 
 use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct ColorRepresentationState {
-    coefficients: Vec<u32>,
-    chroma_locations: Vec<u32>,
-    known_instances: Vec<wp_color_representation_manager_v1::WpColorRepresentationManagerV1>,
+    coefficients_and_ranges: Vec<(Coefficients, Range)>,
+    chroma_locations: Vec<ChromaLocation>,
+    alpha_modes: Vec<AlphaMode>,
+    known_instances: Vec<WpColorRepresentationManagerV1>,
 }
 
 pub trait ColorRepresentationHandler {
@@ -22,58 +26,51 @@ pub trait ColorRepresentationHandler {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ColorRepresentationSurfaceCachedState {
-    coefficient: Option<u32>,
-    chroma_location: Option<u32>,
+    coefficients_and_range: Option<(Coefficients, Range)>,
+    chroma_location: Option<ChromaLocation>,
     alpha_mode: Option<AlphaMode>,
 }
 
-impl Cacheable for Option<ColorRepresentationSurfaceCachedState> {
+impl Cacheable for ColorRepresentationSurfaceCachedState {
     fn commit(&mut self, _dh: &DisplayHandle) -> Self {
         *self
     }
 
     fn merge_into(self, into: &mut Self, _dh: &DisplayHandle) {
-        match (self, into) {
-            (Some(this), Some(into)) => {
-                into.coefficient = this.coefficient.or_else(|| into.coefficient.take());
-                into.chroma_location = this.chroma_location.or_else(|| into.chroma_location.take());
-                into.alpha_mode = this.alpha_mode.or_else(|| into.alpha_mode.take());
-            }
-            (this, into) => {
-                *into = this;
-            }
-        }
+        into.coefficients_and_range = self
+            .coefficients_and_range
+            .or_else(|| into.coefficients_and_range.take());
+        into.chroma_location = self.chroma_location.or_else(|| into.chroma_location.take());
+        into.alpha_mode = self.alpha_mode.or_else(|| into.alpha_mode.take());
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ColorRepresentation {
     pub alpha_mode: AlphaMode,
-    pub coefficient: Option<u32>,
-    pub chroma_location: Option<u32>,
+    pub coefficients_and_range: Option<(Coefficients, Range)>,
+    pub chroma_location: Option<ChromaLocation>,
 }
 
 pub fn get_color_representation(surface: &WlSurface) -> ColorRepresentation {
     compositor::with_states(surface, |states| {
-        states
+        let cached = states
             .cached_state
-            .current::<Option<ColorRepresentationSurfaceCachedState>>()
-            .map(|state| ColorRepresentation {
-                coefficient: state.coefficient,
-                chroma_location: state.chroma_location,
-                alpha_mode: state.alpha_mode.unwrap_or(AlphaMode::PremultipliedElectrical),
-            })
-            .unwrap_or_else(|| ColorRepresentation {
-                alpha_mode: AlphaMode::PremultipliedElectrical,
-                coefficient: None,
-                chroma_location: None,
-            })
+            .get::<ColorRepresentationSurfaceCachedState>()
+            .pending()
+            .clone();
+
+        ColorRepresentation {
+            alpha_mode: cached.alpha_mode.unwrap_or(AlphaMode::PremultipliedElectrical),
+            coefficients_and_range: cached.coefficients_and_range,
+            chroma_location: cached.chroma_location,
+        }
     })
 }
 
 #[derive(Debug)]
 struct ColorRepresentationSurfaceData {
-    instance: Mutex<Option<wp_color_representation_v1::WpColorRepresentationV1>>,
+    instance: Mutex<Option<WpColorRepresentationSurfaceV1>>,
 }
 
 impl ColorRepresentationSurfaceData {
@@ -91,20 +88,22 @@ impl ColorRepresentationSurfaceData {
 impl ColorRepresentationState {
     pub fn new<D>(
         dh: &DisplayHandle,
-        coefficients: impl Iterator<Item = u32>,
-        chroma_locations: impl Iterator<Item = u32>,
+        coefficients_and_ranges: impl Iterator<Item = (Coefficients, Range)>,
+        chroma_locations: impl Iterator<Item = ChromaLocation>,
+        alpha_modes: impl Iterator<Item = AlphaMode>,
     ) -> ColorRepresentationState
     where
-        D: GlobalDispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-            + Dispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-            + Dispatch<wp_color_representation_v1::WpColorRepresentationV1, Weak<WlSurface>>
+        D: GlobalDispatch<WpColorRepresentationManagerV1, ()>
+            + Dispatch<WpColorRepresentationManagerV1, ()>
+            + Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>>
             + ColorRepresentationHandler
             + 'static,
     {
-        dh.create_global::<D, wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>(1, ());
+        dh.create_global::<D, WpColorRepresentationManagerV1, ()>(1, ());
         ColorRepresentationState {
-            coefficients: coefficients.collect(),
+            coefficients_and_ranges: coefficients_and_ranges.collect(),
             chroma_locations: chroma_locations.collect(),
+            alpha_modes: alpha_modes.collect(),
             known_instances: Vec::new(),
         }
     }
@@ -114,27 +113,32 @@ impl ColorRepresentationState {
 #[macro_export]
 macro_rules! delegate_color_representation {
     ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        type __WpColorRepresentationManagerV1 =
-            $crate::wayland::color::representation::wp_color_representation_manager_v1::WpColorRepresentationManagerV1;
-        type __WpColorRepresentationV1 =
-            $crate::wayland::color::representation::wp_color_representation_v1::WpColorRepresentationV1;
+        const _: () = {
+            use $crate::{
+                reexports::{
+                    wayland_protocols::wp::color_representation::v1::server::{
+                        wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
+                        wp_color_representation_surface_v1::WpColorRepresentationSurfaceV1,
+                    },
+                    wayland_server::{delegate_dispatch, delegate_global_dispatch, Weak, protocol::wl_surface::WlSurface},
+                },
+                wayland::color::representation::ColorRepresentationState
+            };
 
-        $crate::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty:
-            [
-                __WpColorRepresentationManagerV1: ()
-            ] => $crate::wayland::color::representation::ColorRepresentationState
-        );
+            delegate_global_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [WpColorRepresentationManagerV1: ()] => ColorRepresentationState
+            );
 
-        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty:
-            [
-                __WpColorRepresentationManagerV1: ()
-            ] => $crate::wayland::color::representation::ColorRepresentationState
-        );
+            delegate_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [WpColorRepresentationManagerV1: ()] => ColorRepresentationState
+            );
 
-        $crate::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty:
-            [
-                __WpColorRepresentationV1: $crate::reexports::wayland_server::Weak<$crate::reexports::wayland_server::protocol::wl_surface::WlSurface>
-            ] => $crate::wayland::color::representation::ColorRepresentationState
-        );
+            delegate_dispatch!(
+                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
+                $ty: [WpColorRepresentationSurfaceV1: Weak<WlSurface>] => ColorRepresentationState
+            );
+        };
     };
 }

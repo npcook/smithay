@@ -48,8 +48,8 @@ use smithay::{
     wayland::{
         color::{
             management::{
-                ColorManagementHandler, ColorManagementState, Feature, ImageDescription,
-                ImageDescriptionContents, Primaries, RenderIntent, TransferFunction,
+                ColorManagementHandler, ColorManagementState, ImageDescription, ImageDescriptionContents,
+                PrimariesEnum, TransferFunctionEnum,
             },
             representation::{ColorRepresentationHandler, ColorRepresentationState},
         },
@@ -623,8 +623,8 @@ impl<BackendData: Backend + 'static> ColorManagementHandler for AnvilState<Backe
         // doesn't matter, vk_hdr_layer doesn't care for this
         self.color_manager
             .build_description(ImageDescriptionContents::Parametric {
-                tf: TransferFunction::CICP(0),
-                primaries: Primaries::CICP(0),
+                tf: TransferFunctionEnum::Named(TransferFunction::CompoundPower24),
+                primaries: PrimariesEnum::Named(Primaries::Srgb),
                 target_primaries: None,
                 target_luminance: None,
                 max_cll: None,
@@ -800,10 +800,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Feature::ExtendedTargetVolume,
             ]
             .into_iter(),
-            [8, 16].into_iter(),
-            [1, 9].into_iter(),
+            [TransferFunction::Srgb, TransferFunction::Gamma22].into_iter(),
+            [Primaries::Srgb].into_iter(),
         );
-        let color_repr = ColorRepresentationState::new::<Self>(&dh, std::iter::empty(), std::iter::empty());
+        let color_repr = ColorRepresentationState::new::<Self>(
+            &dh,
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+        );
 
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = xwayland_shell::XWaylandShellState::new::<Self>(&dh.clone());
