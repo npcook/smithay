@@ -15,13 +15,13 @@ use smithay::{
             RenderElementStates, default_primary_scanout_output_compare, utils::select_dmabuf_feedback,
         },
     },
-    delegate_color_management, delegate_color_representation, delegate_compositor, delegate_data_control,
-    delegate_data_device, delegate_fixes, delegate_fractional_scale, delegate_input_method_manager,
-    delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output, delegate_pointer_constraints,
-    delegate_pointer_gestures, delegate_presentation, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_security_context, delegate_shm, delegate_tablet_manager,
-    delegate_text_input_manager, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_activation, delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_compositor, delegate_data_control, delegate_data_device, delegate_fixes,
+    delegate_fractional_scale, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_layer_shell, delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
+    delegate_presentation, delegate_primary_selection, delegate_relative_pointer, delegate_seat,
+    delegate_security_context, delegate_shm, delegate_tablet_manager, delegate_text_input_manager,
+    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_activation, delegate_xdg_decoration,
+    delegate_xdg_shell,
     desktop::{
         PopupKind, PopupManager, Space,
         space::SpaceElement,
@@ -53,8 +53,8 @@ use smithay::{
     wayland::{
         color::{
             management::{
-                ColorManagementHandler, ColorManagementState, Feature, ImageDescription,
-                ImageDescriptionContents, Primaries, RenderIntent, TransferFunction,
+                ColorManagementHandler, ColorManagementState, ImageDescription, ImageDescriptionContents,
+                PrimariesEnum, TransferFunctionEnum,
             },
             representation::{ColorRepresentationHandler, ColorRepresentationState},
         },
@@ -636,8 +636,8 @@ impl<BackendData: Backend + 'static> ColorManagementHandler for AnvilState<Backe
         // doesn't matter, vk_hdr_layer doesn't care for this
         self.color_manager
             .build_description(ImageDescriptionContents::Parametric {
-                tf: TransferFunction::CICP(0),
-                primaries: Primaries::CICP(0),
+                tf: TransferFunctionEnum::Named(TransferFunction::CompoundPower24),
+                primaries: PrimariesEnum::Named(Primaries::Srgb),
                 target_primaries: None,
                 target_luminance: None,
                 max_cll: None,
@@ -646,7 +646,7 @@ impl<BackendData: Backend + 'static> ColorManagementHandler for AnvilState<Backe
     }
 }
 
-delegate_color_management!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
+smithay::delegate_color_management!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend + 'static> ColorRepresentationHandler for AnvilState<BackendData> {
     fn color_representation_state(&mut self) -> &mut ColorRepresentationState {
@@ -654,7 +654,7 @@ impl<BackendData: Backend + 'static> ColorRepresentationHandler for AnvilState<B
     }
 }
 
-delegate_color_representation!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
+smithay::delegate_color_representation!(@<BackendData: Backend + 'static> AnvilState<BackendData>);
 
 impl<BackendData: Backend> ImageCaptureSourceHandler for AnvilState<BackendData> {
     fn source_destroyed(&mut self, _source: ImageCaptureSource) {
@@ -818,10 +818,15 @@ impl<BackendData: Backend + 'static> AnvilState<BackendData> {
                 Feature::ExtendedTargetVolume,
             ]
             .into_iter(),
-            [8, 16].into_iter(),
-            [1, 9].into_iter(),
+            [TransferFunction::Srgb, TransferFunction::Gamma22].into_iter(),
+            [Primaries::Srgb].into_iter(),
         );
-        let color_repr = ColorRepresentationState::new::<Self>(&dh, std::iter::empty(), std::iter::empty());
+        let color_repr = ColorRepresentationState::new::<Self>(
+            &dh,
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+        );
 
         #[cfg(feature = "xwayland")]
         let xwayland_shell_state = xwayland_shell::XWaylandShellState::new::<Self>(&dh.clone());

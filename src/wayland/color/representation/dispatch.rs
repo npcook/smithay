@@ -1,20 +1,23 @@
 use crate::wayland::compositor;
 
 use super::{
-    wp_color_representation_manager_v1, wp_color_representation_v1, ColorRepresentationHandler,
-    ColorRepresentationState, ColorRepresentationSurfaceCachedState, ColorRepresentationSurfaceData,
+    ColorRepresentationHandler, ColorRepresentationState, ColorRepresentationSurfaceCachedState,
+    ColorRepresentationSurfaceData,
+};
+use wayland_protocols::wp::color_representation::v1::server::{
+    wp_color_representation_manager_v1::{self, WpColorRepresentationManagerV1},
+    wp_color_representation_surface_v1::{self, WpColorRepresentationSurfaceV1},
 };
 use wayland_server::{
     protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
     Resource, Weak,
 };
 
-impl<D> GlobalDispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, (), D>
-    for ColorRepresentationState
+impl<D> GlobalDispatch<WpColorRepresentationManagerV1, (), D> for ColorRepresentationState
 where
-    D: GlobalDispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_v1::WpColorRepresentationV1, Weak<WlSurface>>
+    D: GlobalDispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>>
         + ColorRepresentationHandler
         + 'static,
 {
@@ -22,47 +25,44 @@ where
         state: &mut D,
         _dh: &DisplayHandle,
         _client: &Client,
-        resource: New<wp_color_representation_manager_v1::WpColorRepresentationManagerV1>,
+        resource: New<WpColorRepresentationManagerV1>,
         _global_data: &(),
         data_init: &mut DataInit<'_, D>,
     ) {
         let state = state.color_representation_state();
         let instance = data_init.init(resource, ());
 
-        for code_point in &state.coefficients {
-            instance.coefficients(*code_point);
+        for (coefficient, range) in &state.coefficients_and_ranges {
+            instance.supported_coefficients_and_ranges(*coefficient, *range);
         }
-        for code_point in &state.chroma_locations {
-            instance.chroma_location(*code_point);
+        for mode in &state.alpha_modes {
+            instance.supported_alpha_mode(*mode);
         }
 
         state.known_instances.push(instance);
     }
 }
 
-impl<D> Dispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, (), D>
-    for ColorRepresentationState
+impl<D> Dispatch<WpColorRepresentationManagerV1, (), D> for ColorRepresentationState
 where
-    D: GlobalDispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_v1::WpColorRepresentationV1, Weak<WlSurface>>
+    D: GlobalDispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>>
         + ColorRepresentationHandler
         + 'static,
 {
     fn request(
         _state: &mut D,
         _client: &Client,
-        resource: &wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
+        resource: &WpColorRepresentationManagerV1,
         request: wp_color_representation_manager_v1::Request,
         _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        use wp_color_representation_manager_v1::{Error, Request};
         match request {
-            wp_color_representation_manager_v1::Request::Create {
-                color_representation,
-                surface,
-            } => {
+            Request::GetSurface { id, surface } => {
                 compositor::with_states(&surface, |states| {
                     let data = states
                         .data_map
@@ -70,15 +70,21 @@ where
 
                     if data.is_resource_attached() {
                         resource.post_error(
-                            wp_color_representation_manager_v1::Error::AlreadyConstructed,
+                            Error::SurfaceExists,
                             "Surface already has ColorRepresentation attached",
                         );
                         return;
                     }
 
+                    *states
+                        .cached_state
+                        .get::<ColorRepresentationSurfaceCachedState>()
+                        .pending() = ColorRepresentationSurfaceCachedState { ..Default::default() };
+
+                    let instance = data_init.init(id, surface.downgrade());
+
                     // TODO: add pre_commit_hook to verify chroma_location / coefficient are valid for buffer pixel format
 
-                    let instance = data_init.init(color_representation, surface.downgrade());
                     *data.instance.lock().unwrap() = Some(instance);
                 });
             }
@@ -89,7 +95,7 @@ where
     fn destroyed(
         state: &mut D,
         _client: wayland_backend::server::ClientId,
-        resource: &wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
+        resource: &WpColorRepresentationManagerV1,
         _data: &(),
     ) {
         let state = state.color_representation_state();
@@ -97,94 +103,98 @@ where
     }
 }
 
-impl<D> Dispatch<wp_color_representation_v1::WpColorRepresentationV1, Weak<WlSurface>, D>
-    for ColorRepresentationState
+impl<D> Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>, D> for ColorRepresentationState
 where
-    D: GlobalDispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_manager_v1::WpColorRepresentationManagerV1, ()>
-        + Dispatch<wp_color_representation_v1::WpColorRepresentationV1, Weak<WlSurface>>
+    D: GlobalDispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationManagerV1, ()>
+        + Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>>
         + ColorRepresentationHandler
         + 'static,
 {
     fn request(
         state: &mut D,
         _client: &Client,
-        resource: &wp_color_representation_v1::WpColorRepresentationV1,
-        request: wp_color_representation_v1::Request,
+        resource: &WpColorRepresentationSurfaceV1,
+        request: wp_color_representation_surface_v1::Request,
         data: &Weak<WlSurface>,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        use wp_color_representation_surface_v1::{Error, Request};
         match request {
-            wp_color_representation_v1::Request::SetAlphaMode { alpha_mode } => {
+            Request::SetAlphaMode { alpha_mode } => {
+                let Ok(surface) = data.upgrade() else {
+                    resource.post_error(Error::Inert, "surface doesn't exist");
+                    return;
+                };
+
                 let wayland_server::WEnum::Value(alpha_mode) = alpha_mode else {
-                    resource.post_error(wp_color_representation_v1::Error::InvalidAlphaMode, "Unknown alpha mode");
-                    return
-                };
-
-                let Ok(surface) = data.upgrade() else {
+                    resource.post_error(Error::AlphaMode, "Unknown alpha mode");
                     return;
                 };
 
                 compositor::with_states(&surface, |states| {
-                    let mut representation = states
+                    states
                         .cached_state
-                        .pending::<Option<ColorRepresentationSurfaceCachedState>>();
-                    if representation.is_none() {
-                        *representation = Some(ColorRepresentationSurfaceCachedState::default());
-                    }
-
-                    representation.as_mut().unwrap().alpha_mode = Some(alpha_mode);
+                        .get::<ColorRepresentationSurfaceCachedState>()
+                        .pending()
+                        .alpha_mode = Some(alpha_mode);
                 });
             }
-            wp_color_representation_v1::Request::SetChromaLocation { code_point } => {
+            Request::SetChromaLocation { chroma_location } => {
+                let Ok(surface) = data.upgrade() else {
+                    resource.post_error(Error::Inert, "surface doesn't exist");
+                    return;
+                };
+
+                let wayland_server::WEnum::Value(chroma_location) = chroma_location else {
+                    resource.post_error(Error::AlphaMode, "Unknown chroma location");
+                    return;
+                };
+
                 let state = state.color_representation_state();
-                if !state.chroma_locations.contains(&code_point) {
-                    resource.post_error(
-                        wp_color_representation_v1::Error::UnsupportedChromaLocation,
-                        "client send chroma location not advertised",
-                    );
+                if !state.chroma_locations.contains(&chroma_location) {
+                    resource.post_error(Error::Coefficients, "client send chroma location not advertised");
                     return;
                 }
 
+                compositor::with_states(&surface, |states| {
+                    states
+                        .cached_state
+                        .get::<ColorRepresentationSurfaceCachedState>()
+                        .pending()
+                        .chroma_location = Some(chroma_location);
+                });
+            }
+            Request::SetCoefficientsAndRange { coefficients, range } => {
                 let Ok(surface) = data.upgrade() else {
+                    resource.post_error(Error::Inert, "surface doesn't exist");
                     return;
                 };
 
-                compositor::with_states(&surface, |states| {
-                    let mut representation = states
-                        .cached_state
-                        .pending::<Option<ColorRepresentationSurfaceCachedState>>();
-                    if representation.is_none() {
-                        *representation = Some(ColorRepresentationSurfaceCachedState::default());
-                    }
+                let wayland_server::WEnum::Value(coefficients) = coefficients else {
+                    resource.post_error(Error::AlphaMode, "Unknown coefficients");
+                    return;
+                };
+                let wayland_server::WEnum::Value(range) = range else {
+                    resource.post_error(Error::AlphaMode, "Unknown range");
+                    return;
+                };
 
-                    representation.as_mut().unwrap().chroma_location = Some(code_point);
-                });
-            }
-            wp_color_representation_v1::Request::SetCoefficients { code_point } => {
+                let coefficients_and_range = (coefficients, range);
+
                 let state = state.color_representation_state();
-                if !state.coefficients.contains(&code_point) {
-                    resource.post_error(
-                        wp_color_representation_v1::Error::UnsupportedCoefficients,
-                        "client send coefficient not advertised",
-                    );
+                if !state.coefficients_and_ranges.contains(&coefficients_and_range) {
+                    resource.post_error(Error::Coefficients, "client send coefficient not advertised");
                     return;
                 }
 
-                let Ok(surface) = data.upgrade() else {
-                    return;
-                };
-
                 compositor::with_states(&surface, |states| {
-                    let mut representation = states
+                    states
                         .cached_state
-                        .pending::<Option<ColorRepresentationSurfaceCachedState>>();
-                    if representation.is_none() {
-                        *representation = Some(ColorRepresentationSurfaceCachedState::default());
-                    }
-
-                    representation.as_mut().unwrap().coefficient = Some(code_point);
+                        .get::<ColorRepresentationSurfaceCachedState>()
+                        .pending()
+                        .coefficients_and_range = Some(coefficients_and_range);
                 });
             }
             _ => {}
@@ -194,7 +204,7 @@ where
     fn destroyed(
         _state: &mut D,
         _client: wayland_backend::server::ClientId,
-        _resource: &wp_color_representation_v1::WpColorRepresentationV1,
+        _resource: &WpColorRepresentationSurfaceV1,
         data: &Weak<WlSurface>,
     ) {
         let Ok(surface) = data.upgrade() else {
@@ -208,7 +218,8 @@ where
 
             *states
                 .cached_state
-                .pending::<Option<ColorRepresentationSurfaceCachedState>>() = None;
+                .get::<ColorRepresentationSurfaceCachedState>()
+                .pending() = ColorRepresentationSurfaceCachedState::default();
         });
     }
 }
