@@ -1,7 +1,7 @@
 use crate::{
     output::{Output, WeakOutput},
     utils::{user_data::UserDataMap, SealedFile},
-    wayland::compositor::{self, Cacheable},
+    wayland::compositor::{self, Cacheable, SurfaceData},
 };
 
 mod dispatch;
@@ -22,9 +22,11 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
     wp_image_description_v1::WpImageDescriptionV1,
 };
-use wayland_server::{protocol::wl_surface::WlSurface, Dispatch, DisplayHandle, GlobalDispatch, Weak};
+use wayland_server::{
+    protocol::wl_surface::WlSurface, Dispatch, DisplayHandle, GlobalDispatch, Resource, Weak,
+};
 
-crate::utils::ids::id_gen!(img_desc_id);
+static NEXT_IMAGE_DESCRIPTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug)]
 pub struct ColorManagementState {
@@ -66,14 +68,48 @@ impl ColorManagementOutput {
 }
 
 pub fn get_surface_description(surface: &WlSurface) -> (Option<ImageDescription>, RenderIntent) {
-    let data = compositor::with_states(surface, |states| {
-        states
-            .cached_state
-            .get::<ColorManagementSurfaceCachedState>()
-            .current()
-            .clone()
-    });
+    compositor::with_states(surface, get_surface_description_from_surface_data)
+}
+
+pub fn get_output_description(output: &Output) -> Option<ImageDescription> {
+    output
+        .user_data()
+        .get::<ColorManagementOutput>()
+        .map(|data| data.description.lock().unwrap().clone())
+}
+
+pub fn get_surface_description_from_surface_data(
+    states: &SurfaceData,
+) -> (Option<ImageDescription>, RenderIntent) {
+    let data = states
+        .cached_state
+        .get::<ColorManagementSurfaceCachedState>()
+        .current()
+        .clone();
     (data.description, data.render_intent)
+}
+
+pub fn update_surface_preferred(states: &SurfaceData, preferred: ImageDescription) {
+    let preferred_id = preferred.0.id;
+
+    let Some(data) = states.data_map.get::<ColorManagementSurfaceData>() else {
+        return;
+    };
+
+    {
+        let mut current_preferred = data.preferred.lock().unwrap();
+        if current_preferred.0.id == preferred.0.id {
+            return;
+        }
+        *current_preferred = preferred;
+    }
+    for feedback in data.known_feedback_instances.lock().unwrap().iter() {
+        if feedback.version() >= 2 {
+            feedback.preferred_changed2((preferred_id >> 32) as u32, preferred_id as u32);
+        } else {
+            feedback.preferred_changed(preferred_id as u32);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,15 +199,9 @@ impl ImageDescription {
 
 #[derive(Debug)]
 pub struct ImageDescriptionInternal {
-    id: usize,
+    id: u64,
     contents: ImageDescriptionContents,
     user_data: UserDataMap,
-}
-
-impl Drop for ImageDescriptionInternal {
-    fn drop(&mut self) {
-        img_desc_id::remove(self.id);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -186,14 +216,28 @@ impl AsRef<[u8]> for IccData {
     }
 }
 
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct Luminance {
+    pub min: u32,
+    pub max: u32,
+    pub reference: u32,
+}
+
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
+pub struct MasteringLuminance {
+    pub min: u32,
+    pub max: u32,
+}
+
 #[derive(Debug, Clone)]
 pub enum ImageDescriptionContents {
     ICC(IccData),
     Parametric {
         tf: TransferFunctionEnum,
         primaries: PrimariesEnum,
+        luminances: Option<Luminance>,
         target_primaries: Option<ParametricPrimaries>,
-        target_luminance: Option<(u32, u32)>,
+        target_luminance: Option<MasteringLuminance>,
         max_cll: Option<u32>,
         max_fall: Option<u32>,
     },
@@ -208,16 +252,18 @@ impl Hash for ImageDescriptionContents {
             ImageDescriptionContents::Parametric {
                 tf,
                 primaries,
+                luminances,
                 target_primaries,
                 target_luminance,
-                max_cll: max_ccl,
+                max_cll,
                 max_fall,
             } => {
                 tf.hash(state);
                 primaries.hash(state);
+                luminances.hash(state);
                 target_primaries.hash(state);
                 target_luminance.hash(state);
-                max_ccl.hash(state);
+                max_cll.hash(state);
                 max_fall.hash(state);
             }
         }
@@ -235,6 +281,7 @@ impl PartialEq for ImageDescriptionContents {
                 ImageDescriptionContents::Parametric {
                     tf: tf1,
                     primaries: primaries1,
+                    luminances: luminances1,
                     target_primaries: target_primaries1,
                     target_luminance: target_luminance1,
                     max_cll: max_ccl1,
@@ -243,6 +290,7 @@ impl PartialEq for ImageDescriptionContents {
                 ImageDescriptionContents::Parametric {
                     tf: tf2,
                     primaries: primaries2,
+                    luminances: luminances2,
                     target_primaries: target_primaries2,
                     target_luminance: target_luminance2,
                     max_cll: max_ccl2,
@@ -251,6 +299,7 @@ impl PartialEq for ImageDescriptionContents {
             ) => {
                 tf1 == tf2
                     && primaries1 == primaries2
+                    && luminances1 == luminances2
                     && target_primaries1 == target_primaries2
                     && target_luminance1 == target_luminance2
                     && max_ccl1 == max_ccl2
@@ -277,10 +326,10 @@ pub enum PrimariesEnum {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParametricPrimaries {
-    red: (i32, i32),
-    green: (i32, i32),
-    blue: (i32, i32),
-    white: (i32, i32),
+    pub red: (i32, i32),
+    pub green: (i32, i32),
+    pub blue: (i32, i32),
+    pub white: (i32, i32),
 }
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -347,7 +396,7 @@ impl ColorManagementState {
             Some(desc) => desc,
             None => {
                 let desc = Arc::new(ImageDescriptionInternal {
-                    id: img_desc_id::next(),
+                    id: NEXT_IMAGE_DESCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                     contents: contents.clone(),
                     user_data: UserDataMap::new(),
                 });
@@ -412,9 +461,9 @@ impl TryInto<ImageDescriptionContents> for ImageDescriptionIccBuilder {
 pub struct ImageDescriptionParametricBuilder {
     tf: Option<TransferFunctionEnum>,
     primaries: Option<PrimariesEnum>,
+    luminances: Option<Luminance>,
     target_primaries: Option<ParametricPrimaries>,
-    target_luminance: Option<(u32, u32)>,
-    luminances: Option<(u32, u32, u32)>,
+    target_luminance: Option<MasteringLuminance>,
     max_cll: Option<u32>,
     max_fall: Option<u32>,
 }
@@ -438,13 +487,13 @@ impl ImageDescriptionParametricBuilder {
         result
     }
 
-    pub fn set_target_luminance(&mut self, target_lumninance: (u32, u32)) -> bool {
+    pub fn set_target_luminance(&mut self, target_luminance: MasteringLuminance) -> bool {
         let result = self.target_luminance.is_some();
-        self.target_luminance = Some(target_lumninance);
+        self.target_luminance = Some(target_luminance);
         result
     }
 
-    pub fn set_luminances(&mut self, luminances: (u32, u32, u32)) -> bool {
+    pub fn set_luminances(&mut self, luminances: Luminance) -> bool {
         let result = self.luminances.is_some();
         self.luminances = Some(luminances);
         result
@@ -470,18 +519,10 @@ impl TryInto<ImageDescriptionContents> for ImageDescriptionParametricBuilder {
             return Err(DescriptionError::IncompleteSet);
         }
 
-        match self.tf {
-            Some(TransferFunctionEnum::Named(TransferFunction::St2084Pq | TransferFunction::Hlg)) => {
-                if self.target_luminance.is_some() || self.max_cll.is_some() || self.max_fall.is_some() {
-                    return Err(DescriptionError::InconsistentSet);
-                }
-            }
-            _ => {}
-        }
-
         Ok(ImageDescriptionContents::Parametric {
             tf: self.tf.unwrap(),
             primaries: self.primaries.unwrap(),
+            luminances: self.luminances,
             target_primaries: self.target_primaries,
             target_luminance: self.target_luminance,
             max_cll: self.max_cll,

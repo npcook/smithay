@@ -39,6 +39,8 @@ where
             instance.supported_alpha_mode(*mode);
         }
 
+        instance.done();
+
         state.known_instances.push(instance);
     }
 }
@@ -60,6 +62,7 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        println!("{:?}", request);
         use wp_color_representation_manager_v1::{Error, Request};
         match request {
             Request::GetSurface { id, surface } => {
@@ -120,6 +123,7 @@ where
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        println!("{:?}", request);
         use wp_color_representation_surface_v1::{Error, Request};
         match request {
             Request::SetAlphaMode { alpha_mode } => {
@@ -148,13 +152,16 @@ where
                 };
 
                 let wayland_server::WEnum::Value(chroma_location) = chroma_location else {
-                    resource.post_error(Error::AlphaMode, "Unknown chroma location");
+                    resource.post_error(Error::ChromaLocation, "Unknown chroma location");
                     return;
                 };
 
                 let state = state.color_representation_state();
                 if !state.chroma_locations.contains(&chroma_location) {
-                    resource.post_error(Error::Coefficients, "client send chroma location not advertised");
+                    resource.post_error(
+                        Error::ChromaLocation,
+                        "client send chroma location not advertised",
+                    );
                     return;
                 }
 
@@ -173,11 +180,11 @@ where
                 };
 
                 let wayland_server::WEnum::Value(coefficients) = coefficients else {
-                    resource.post_error(Error::AlphaMode, "Unknown coefficients");
+                    resource.post_error(Error::Coefficients, "Unknown coefficients");
                     return;
                 };
                 let wayland_server::WEnum::Value(range) = range else {
-                    resource.post_error(Error::AlphaMode, "Unknown range");
+                    resource.post_error(Error::Coefficients, "Unknown range");
                     return;
                 };
 
