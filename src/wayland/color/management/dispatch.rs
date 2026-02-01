@@ -3,7 +3,10 @@ use std::{ffi::CString, os::unix::prelude::AsFd, sync::Mutex};
 use crate::{
     output::{Output, WeakOutput},
     utils::SealedFile,
-    wayland::compositor,
+    wayland::{
+        color::management::{Luminance, MasteringLuminance},
+        compositor,
+    },
 };
 
 use super::{
@@ -65,6 +68,7 @@ where
         for code_point in &state.supported_primaries {
             instance.supported_primaries_named(*code_point);
         }
+        instance.done();
     }
 }
 
@@ -92,13 +96,12 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        use wp_color_manager_v1::{Error, Request};
+        // println!("{:?}", request);
         match request {
-            wp_color_manager_v1::Request::GetOutput { id, output } => {
+            Request::GetOutput { id, output } => {
                 let Some(output) = Output::from_resource(&output) else {
-                    resource.post_error(
-                        wp_color_manager_v1::Error::UnsupportedFeature,
-                        "WlOutput has no associated `Output`",
-                    );
+                    resource.post_error(Error::UnsupportedFeature, "WlOutput has no associated `Output`");
                     return;
                 };
 
@@ -109,7 +112,7 @@ where
                 let instance = data_init.init(id, output.downgrade());
                 color_output.add_instance(instance);
             }
-            wp_color_manager_v1::Request::GetSurface { id, surface } => {
+            Request::GetSurface { id, surface } => {
                 compositor::with_states(&surface, |states| {
                     let data = states.data_map.get_or_insert_threadsafe(|| {
                         ColorManagementSurfaceData::new(state.preferred_description_for_surface(&surface))
@@ -119,21 +122,27 @@ where
                     data.add_instance(instance);
                 });
             }
-            wp_color_manager_v1::Request::GetSurfaceFeedback { id, surface } => {
+            Request::GetSurfaceFeedback { id, surface } => {
                 compositor::with_states(&surface, |states| {
                     let data = states.data_map.get_or_insert_threadsafe(|| {
                         ColorManagementSurfaceData::new(state.preferred_description_for_surface(&surface))
                     });
 
+                    let preferred_id = data.preferred.lock().unwrap().0.id;
                     let instance = data_init.init(id, surface.downgrade());
+                    if instance.version() >= 2 {
+                        instance.preferred_changed2((preferred_id >> 32) as u32, preferred_id as u32);
+                    } else {
+                        instance.preferred_changed(preferred_id as u32);
+                    }
                     data.add_feedback_instance(instance);
                 });
             }
-            wp_color_manager_v1::Request::CreateIccCreator { obj } => {
+            Request::CreateIccCreator { obj } => {
                 let state = state.color_management_state();
                 if !state.supported_features.contains(&Feature::IccV2V4) {
                     resource.post_error(
-                        wp_color_manager_v1::Error::UnsupportedFeature,
+                        Error::UnsupportedFeature,
                         "Compositor doesn't support the ICC image description creator",
                     );
                     return;
@@ -141,11 +150,11 @@ where
 
                 data_init.init(obj, Mutex::new(Some(ImageDescriptionIccBuilder::default())));
             }
-            wp_color_manager_v1::Request::CreateParametricCreator { obj } => {
+            Request::CreateParametricCreator { obj } => {
                 let state = state.color_management_state();
                 if !state.supported_features.contains(&Feature::Parametric) {
                     resource.post_error(
-                        wp_color_manager_v1::Error::UnsupportedFeature,
+                        Error::UnsupportedFeature,
                         "Compositor doesn't support the Parametric image description creator",
                     );
                     return;
@@ -185,6 +194,7 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         match request {
             wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
                 if let Some(output) = data.upgrade() {
@@ -197,7 +207,7 @@ where
                             info: info.clone(),
                         },
                     );
-                    instance.ready(info.0.id as u32);
+                    image_description_ready(&instance, info.0.id);
                 } else {
                     let failed_desc = data_init.init(image_description, ());
                     failed_desc.failed(
@@ -248,6 +258,7 @@ where
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         use wp_color_management_surface_v1::{Error, Request};
         match request {
             Request::SetImageDescription {
@@ -279,6 +290,11 @@ where
                                     }
                                 },
                             };
+                            // println!(
+                            //     "Successfully set surface description on surface {}: {:?}",
+                            //     surface.id(),
+                            //     data.info
+                            // );
                         })
                     } else {
                         image_description.post_error(
@@ -347,8 +363,10 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
+        use wp_color_management_surface_feedback_v1::Request;
         match request {
-            wp_color_management_surface_feedback_v1::Request::GetPreferred { image_description } => {
+            Request::GetPreferred { image_description } => {
                 if let Ok(surface) = data.upgrade() {
                     compositor::with_states(&surface, |states| {
                         let data = states.data_map.get::<ColorManagementSurfaceData>().unwrap();
@@ -360,7 +378,7 @@ where
                                 info: info.clone(),
                             },
                         );
-                        instance.ready(info.0.id as u32);
+                        image_description_ready(&instance, info.0.id);
                     });
                 } else {
                     let failed_desc = data_init.init(image_description, ());
@@ -370,9 +388,7 @@ where
                     );
                 }
             }
-            wp_color_management_surface_feedback_v1::Request::GetPreferredParametric {
-                image_description,
-            } => {
+            Request::GetPreferredParametric { image_description } => {
                 if let Ok(surface) = data.upgrade() {
                     compositor::with_states(&surface, |states| {
                         let data = states.data_map.get::<ColorManagementSurfaceData>().unwrap();
@@ -384,7 +400,7 @@ where
                                 info: info.clone(),
                             },
                         );
-                        instance.ready(info.0.id as u32);
+                        image_description_ready(&instance, info.0.id);
                         todo!();
                     });
                 } else {
@@ -395,7 +411,7 @@ where
                     );
                 }
             }
-            wp_color_management_surface_feedback_v1::Request::Destroy => {}
+            Request::Destroy => {}
             _ => {}
         }
     }
@@ -440,6 +456,7 @@ where
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         use wp_image_description_v1::{Error, Request};
         match request {
             Request::Destroy => {}
@@ -472,6 +489,7 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         use wp_image_description_v1::{Cause, Error, Request};
         match request {
             Request::GetInformation { information } => {
@@ -504,6 +522,7 @@ where
                     super::ImageDescriptionContents::Parametric {
                         tf,
                         primaries,
+                        luminances,
                         target_primaries,
                         target_luminance,
                         max_cll: max_ccl,
@@ -523,6 +542,9 @@ where
                             }) => instance
                                 .primaries(red.0, red.1, green.0, green.1, blue.0, blue.1, white.0, white.1),
                         };
+                        if let Some(luminances) = luminances {
+                            instance.luminances(luminances.min, luminances.max, luminances.reference);
+                        }
                         if let Some(ParametricPrimaries {
                             red,
                             green,
@@ -533,9 +555,9 @@ where
                             instance.target_primaries(
                                 red.0, red.1, green.0, green.1, blue.0, blue.1, white.0, white.1,
                             );
-                            if let Some((min_lum, max_lum)) = target_luminance {
-                                instance.target_luminance(*min_lum, *max_lum);
-                            }
+                        }
+                        if let Some(target_luminance) = target_luminance {
+                            instance.target_luminance(target_luminance.min, target_luminance.max);
                         }
                         if let Some(max_ccl) = max_ccl {
                             instance.target_max_cll(*max_ccl);
@@ -558,6 +580,7 @@ where
         _resource: &WpImageDescriptionV1,
         data: &ImageDescriptionData,
     ) {
+        // println!("destroyed");
         state
             .color_management_state()
             .known_image_descriptions
@@ -617,6 +640,7 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         use wp_image_description_creator_icc_v1::{Error, Request};
         match request {
             Request::SetIccFile {
@@ -669,7 +693,7 @@ where
                                     info: desc.clone(),
                                 },
                             );
-                            instance.ready(desc.0.id as u32);
+                            image_description_ready(&instance, desc.0.id);
                         } else {
                             let instance = data_init.init(image_description, ());
                             instance.failed(
@@ -717,6 +741,7 @@ where
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
+        // println!("{:?}", request);
         use wp_image_description_creator_params_v1::{Error, Request};
         let color_state = state.color_management_state();
         match request {
@@ -802,11 +827,13 @@ where
             } => {
                 let mut data_guard = data.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
+                    // println!("fail1");
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
                 };
 
                 if !color_state.supported_features.contains(&Feature::SetPrimaries) {
+                    // println!("fail2");
                     resource.post_error(Error::UnsupportedFeature, "Unsupported feature set_primaries");
                     return;
                 }
@@ -817,9 +844,11 @@ where
                     blue: (b_x, b_y),
                     white: (w_x, w_y),
                 })) {
+                    // println!("fail3");
                     resource.post_error(Error::AlreadySet, "Primaries were already set");
                     return;
                 }
+                // println!("made it");
             }
             Request::SetMasteringDisplayPrimaries {
                 r_x,
@@ -881,7 +910,10 @@ where
                     return;
                 }
 
-                if data.set_target_luminance((min_lum, max_lum)) {
+                if data.set_target_luminance(MasteringLuminance {
+                    min: min_lum,
+                    max: max_lum,
+                }) {
                     resource.post_error(Error::AlreadySet, "Mastering luminances were already set");
                     return;
                 }
@@ -936,7 +968,11 @@ where
                     return;
                 }
 
-                if data.set_luminances((min_lum, max_lum, reference_lum)) {
+                if data.set_luminances(Luminance {
+                    min: min_lum,
+                    max: max_lum,
+                    reference: reference_lum,
+                }) {
                     resource.post_error(Error::AlreadySet, "Luminances were already set");
                     return;
                 }
@@ -957,7 +993,7 @@ where
                                 info: desc.clone(),
                             },
                         );
-                        instance.ready(desc.0.id as u32);
+                        image_description_ready(&instance, desc.0.id);
                     }
                     Err(DescriptionError::IncompleteSet) => {
                         resource.post_error(Error::IncompleteSet, "incomplete parameter set");
@@ -971,5 +1007,14 @@ where
             }
             _ => {}
         }
+    }
+}
+
+fn image_description_ready(instance: &WpImageDescriptionV1, id: u64) {
+    // println!("Image description ready: {}, v{}", id, instance.version());
+    if instance.version() >= 2 {
+        instance.ready2((id >> 32) as u32, id as u32);
+    } else {
+        instance.ready(id as u32);
     }
 }
