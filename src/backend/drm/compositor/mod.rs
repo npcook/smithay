@@ -2745,6 +2745,23 @@ where
         self.surface.use_vrr(vrr).map_err(FrameError::DrmError)
     }
 
+    /// Returns if High Dynamic Range is supportedby this connector [`DrmCompositor`].
+    pub fn hdr_supported(&self, conn: connector::Handle) -> FrameResult<bool, A, F> {
+        self.surface.hdr_supported(conn).map_err(FrameError::DrmError)
+    }
+
+    /// Returns if High Dynamic Range is currently enabled for frames composed by this [`DrmCompositor`].
+    pub fn hdr_enabled(&self) -> bool {
+        self.surface.hdr_enabled()
+    }
+
+    /// Tries to set High Dynamic Range (HDR) for the next frame.
+    ///
+    /// Doing so might cause the next frame to trigger a modeset.
+    pub fn use_hdr(&mut self, hdr: Option<drm_ffi::hdr_output_metadata>) -> FrameResult<(), A, F> {
+        self.surface.use_hdr(hdr).map_err(FrameError::DrmError)
+    }
+
     /// Set the [`DebugFlags`] to use
     ///
     /// Note: This will reset the primary plane swapchain if

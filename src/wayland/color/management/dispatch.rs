@@ -4,7 +4,7 @@ use crate::{
     output::{Output, WeakOutput},
     utils::SealedFile,
     wayland::{
-        color::management::{Luminance, MasteringLuminance},
+        color::management::{ImageDescriptionContents, Luminance, MasteringLuminance},
         compositor,
     },
 };
@@ -26,8 +26,8 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 use wayland_server::{
-    protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New,
-    Resource, WEnum, Weak,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
+    protocol::wl_surface::WlSurface,
 };
 
 impl<D> GlobalDispatch<WpColorManagerV1, (), D> for ColorManagementState
@@ -105,9 +105,9 @@ where
                     return;
                 };
 
-                let color_output = output
-                    .user_data()
-                    .get_or_insert(|| ColorManagementOutput::new(state.description_for_output(&output)));
+                let color_output = output.user_data().get_or_insert_threadsafe(|| {
+                    ColorManagementOutput::new(state.description_for_output(&output))
+                });
 
                 let instance = data_init.init(id, output.downgrade());
                 color_output.add_instance(instance);
@@ -164,6 +164,27 @@ where
                     obj,
                     Mutex::new(Some(ImageDescriptionParametricBuilder::default())),
                 );
+            }
+            Request::CreateWindowsScrgb { image_description } => {
+                let state = state.color_management_state();
+                if !state.supported_features.contains(&Feature::WindowsScrgb) {
+                    resource.post_error(
+                        Error::UnsupportedFeature,
+                        "Compositor doesn't support Windows scRGB image descriptions",
+                    );
+                    return;
+                }
+
+                let info = state.build_description(ImageDescriptionContents::Scrgb);
+                let id = info.0.id;
+                let instance = data_init.init(
+                    image_description,
+                    ImageDescriptionData {
+                        get_information: false,
+                        info,
+                    },
+                );
+                image_description_ready(&instance, id);
             }
             _ => {}
         }
@@ -566,6 +587,10 @@ where
                             instance.target_max_fall(*max_fall);
                         }
                     }
+                    super::ImageDescriptionContents::Scrgb => {
+                        warn!("scRGB image descriptions don't support get information");
+                        resource.failed(Cause::Unsupported, "Internal error".into());
+                    }
                 }
 
                 instance.done();
@@ -905,7 +930,7 @@ where
                     return;
                 }
 
-                if max_lum * 10000 <= min_lum {
+                if max_lum as u64 * 10000 <= min_lum as u64 {
                     resource.post_error(Error::InvalidLuminance, "MaxLUM <= MinLUM");
                     return;
                 }
@@ -958,12 +983,12 @@ where
                     return;
                 }
 
-                if max_lum * 10000 <= min_lum {
+                if max_lum as u64 * 10000 <= min_lum as u64 {
                     resource.post_error(Error::InvalidLuminance, "MaxLUM <= MinLUM");
                     return;
                 }
 
-                if reference_lum * 10000 <= min_lum {
+                if reference_lum as u64 * 10000 <= min_lum as u64 {
                     resource.post_error(Error::InvalidLuminance, "RefLUM <= MinLUM");
                     return;
                 }

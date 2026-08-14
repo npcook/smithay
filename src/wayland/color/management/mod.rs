@@ -1,6 +1,6 @@
 use crate::{
     output::{Output, WeakOutput},
-    utils::{user_data::UserDataMap, SealedFile},
+    utils::{SealedFile, user_data::UserDataMap},
     wayland::compositor::{self, Cacheable, SurfaceData},
 };
 
@@ -23,7 +23,7 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_v1::WpImageDescriptionV1,
 };
 use wayland_server::{
-    protocol::wl_surface::WlSurface, Dispatch, DisplayHandle, GlobalDispatch, Resource, Weak,
+    Dispatch, DisplayHandle, GlobalDispatch, Resource, Weak, protocol::wl_surface::WlSurface,
 };
 
 static NEXT_IMAGE_DESCRIPTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -87,6 +87,16 @@ pub fn get_surface_description_from_surface_data(
         .current()
         .clone();
     (data.description, data.render_intent)
+}
+
+pub fn update_output_desc(output: &Output, desc: ImageDescription) {
+    let Some(color_output) = output.user_data().get::<ColorManagementOutput>() else {
+        return;
+    };
+    *color_output.description.lock().unwrap() = desc;
+    for instance in color_output.known_instances.lock().unwrap().iter() {
+        instance.image_description_changed();
+    }
 }
 
 pub fn update_surface_preferred(states: &SurfaceData, preferred: ImageDescription) {
@@ -241,6 +251,7 @@ pub enum ImageDescriptionContents {
         max_cll: Option<u32>,
         max_fall: Option<u32>,
     },
+    Scrgb,
 }
 
 impl Hash for ImageDescriptionContents {
@@ -266,6 +277,7 @@ impl Hash for ImageDescriptionContents {
                 max_cll.hash(state);
                 max_fall.hash(state);
             }
+            ImageDescriptionContents::Scrgb => {}
         }
     }
 }

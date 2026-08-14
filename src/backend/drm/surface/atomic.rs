@@ -37,12 +37,35 @@ use tracing::{debug, info, info_span, instrument, trace, warn};
 
 use super::{PlaneConfig, PlaneState, VrrSupport};
 
+#[derive(Copy, Clone)]
+pub struct HdrOutputMetadata(drm_ffi::hdr_output_metadata);
+
+impl PartialEq for HdrOutputMetadata {
+    fn eq(&self, other: &Self) -> bool {
+        unsafe {
+            self.0.metadata_type == other.0.metadata_type
+                && self.0.__bindgen_anon_1.hdmi_metadata_type1 == other.0.__bindgen_anon_1.hdmi_metadata_type1
+        }
+    }
+}
+
+impl std::fmt::Debug for HdrOutputMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HdrOutputMetadata")
+            .field(&self.0.metadata_type)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct State {
     pub active: bool,
     pub mode: Mode,
     pub blob: property::Value<'static>,
     pub vrr: bool,
+    pub hdr_output_metadata: Option<HdrOutputMetadata>,
+    pub hdr_blob: property::Value<'static>,
+    pub colorspace_bt2020_rgb: bool,
     pub connectors: HashSet<connector::Handle>,
 }
 
@@ -52,6 +75,8 @@ impl PartialEq for State {
         self.active == other.active
             && self.mode == other.mode
             && self.vrr == other.vrr
+            && self.hdr_output_metadata == other.hdr_output_metadata
+            && self.colorspace_bt2020_rgb == other.colorspace_bt2020_rgb
             && self.connectors == other.connectors
     }
 }
@@ -149,6 +174,9 @@ impl State {
             blob: current_blob,
             // If we don't know the VRR state, the driver doesn't support the property
             vrr: vrr.unwrap_or(false),
+            colorspace_bt2020_rgb: false,
+            hdr_output_metadata: None,
+            hdr_blob: property::Value::Blob(0),
             connectors: current_connectors,
         })
     }
@@ -158,6 +186,8 @@ impl State {
         self.blob = property::Value::Unknown(0);
         self.connectors.clear();
         self.active = false;
+        self.colorspace_bt2020_rgb = false;
+        self.hdr_output_metadata = None;
         self.vrr = false;
     }
 }
@@ -206,6 +236,9 @@ impl AtomicDrmSurface {
             mode,
             blob,
             vrr: false,
+            colorspace_bt2020_rgb: false,
+            hdr_output_metadata: None,
+            hdr_blob: property::Value::Blob(0),
             connectors: connectors.iter().copied().collect(),
         };
 
@@ -362,6 +395,8 @@ impl AtomicDrmSurface {
                 self.crtc,
                 Some(pending.blob),
                 pending.vrr,
+                Some(pending.hdr_blob),
+                Some(pending.colorspace_bt2020_rgb),
                 &connectors,
                 [],
                 [&plane_state],
@@ -421,6 +456,8 @@ impl AtomicDrmSurface {
             self.crtc,
             Some(pending.blob),
             pending.vrr,
+            Some(pending.hdr_blob),
+            Some(pending.colorspace_bt2020_rgb),
             &connectors,
             [&conn],
             [&plane_state],
@@ -478,6 +515,8 @@ impl AtomicDrmSurface {
             self.crtc,
             Some(pending.blob),
             pending.vrr,
+            Some(pending.hdr_blob),
+            Some(pending.colorspace_bt2020_rgb),
             &conns,
             removed,
             [&plane_state],
@@ -532,6 +571,8 @@ impl AtomicDrmSurface {
             self.crtc,
             Some(new_blob),
             pending.vrr,
+            Some(pending.hdr_blob),
+            Some(pending.colorspace_bt2020_rgb),
             pending.connectors.iter(),
             [],
             [&plane_state],
@@ -655,6 +696,8 @@ impl AtomicDrmSurface {
             self.crtc,
             Some(pending.blob),
             value,
+            Some(pending.hdr_blob),
+            Some(pending.colorspace_bt2020_rgb),
             &pending.connectors,
             &[],
             [&plane_config],
@@ -682,6 +725,99 @@ impl AtomicDrmSurface {
             .map_err(|_| Error::TestFailed(self.crtc))?;
 
         pending.vrr = value;
+        Ok(())
+    }
+
+    pub fn hdr_supported(&self, conn: connector::Handle) -> Result<bool, Error> {
+        if !self.active.load(Ordering::SeqCst) {
+            return Err(Error::DeviceInactive);
+        }
+
+        if self
+            .prop_mapping
+            .read()
+            .unwrap()
+            .conn_prop_handle(conn, "HDR_OUTPUT_METADATA")
+            .is_err()
+        {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
+    pub fn hdr_enabled(&self) -> bool {
+        self.pending.read().unwrap().hdr_output_metadata.is_some()
+    }
+
+    pub fn use_hdr(&self, value: Option<drm_ffi::hdr_output_metadata>) -> Result<(), Error> {
+        let mut pending = self.pending.write().unwrap();
+        let value = value.map(|x| HdrOutputMetadata(x));
+        if pending.hdr_output_metadata == value {
+            return Ok(());
+        }
+
+        let (new_blob, use_bt2020) = if let Some(value) = &value {
+            // check if new config is supported
+            let new_blob = self.fd.create_property_blob(&value.0).map_err(|source| {
+                Error::Access(AccessError {
+                    errmsg: "Failed to create Property Blob for mode",
+                    dev: self.fd.dev_path(),
+                    source,
+                })
+            })?;
+            (new_blob, true)
+        } else {
+            (property::Value::Blob(0), false)
+        };
+
+        let test_buffer = self.create_test_buffer(pending.mode.size(), self.plane)?;
+        let plane_config = PlaneState {
+            handle: self.plane,
+            config: Some(PlaneConfig {
+                src: Rectangle::from_size(pending.mode.size().into()).to_f64(),
+                dst: Rectangle::from_size(
+                    (pending.mode.size().0 as i32, pending.mode.size().1 as i32).into(),
+                ),
+                transform: Transform::Normal,
+                alpha: 1.0,
+                damage_clips: None,
+                fb: test_buffer.fb,
+                fence: None,
+            }),
+        };
+
+        let prop_mapping = self.prop_mapping.read().unwrap();
+        let req = AtomicRequest::build_request(
+            &prop_mapping,
+            self.crtc,
+            Some(pending.blob),
+            pending.vrr,
+            Some(new_blob),
+            Some(use_bt2020),
+            &pending.connectors,
+            &[],
+            [&plane_config],
+        )?;
+
+        if let Err(err) = self
+            .fd
+            .atomic_commit(
+                AtomicCommitFlags::ALLOW_MODESET | AtomicCommitFlags::TEST_ONLY,
+                req.build()?,
+            )
+            .map_err(|_| Error::TestFailed(self.crtc))
+        {
+            let new_blob_id = new_blob.into();
+            if new_blob_id != 0 {
+                let _ = self.fd.destroy_property_blob(new_blob_id);
+            }
+            return Err(err);
+        }
+
+        pending.hdr_output_metadata = value;
+        pending.colorspace_bt2020_rgb = use_bt2020;
+        pending.hdr_blob = new_blob;
         Ok(())
     }
 
@@ -725,6 +861,8 @@ impl AtomicDrmSurface {
             self.crtc,
             Some(pending.blob),
             pending.vrr,
+            Some(pending.hdr_blob),
+            Some(pending.colorspace_bt2020_rgb),
             &pending_conns,
             removed,
             &*planes,
@@ -797,6 +935,8 @@ impl AtomicDrmSurface {
                 self.crtc,
                 Some(pending.blob),
                 pending.vrr,
+                Some(pending.hdr_blob),
+                Some(pending.colorspace_bt2020_rgb),
                 &pending_conns,
                 removed,
                 &*planes,
@@ -813,6 +953,12 @@ impl AtomicDrmSurface {
                 if current.mode != pending.mode {
                     if let Err(err) = self.fd.destroy_property_blob(current.blob.into()) {
                         warn!("Failed to destroy old mode property blob: {}", err);
+                    }
+                }
+                let hdr_blob_id = current.hdr_blob.into();
+                if current.hdr_output_metadata != pending.hdr_output_metadata && hdr_blob_id != 0 {
+                    if let Err(err) = self.fd.destroy_property_blob(hdr_blob_id) {
+                        warn!("Failed to destroy old hdr property blob: {}", err);
                     }
                 }
 
@@ -884,6 +1030,8 @@ impl AtomicDrmSurface {
             self.crtc,
             None,
             self.state.read().unwrap().vrr,
+            None,
+            None,
             [],
             [],
             &*planes,
@@ -1171,9 +1319,30 @@ impl<'a> AtomicRequest<'a> {
         }
     }
 
-    fn set_connector(&mut self, conn: connector::Handle, crtc: crtc::Handle) -> Result<(), Error> {
+    fn set_connector(
+        &mut self,
+        conn: connector::Handle,
+        crtc: crtc::Handle,
+        hdr_output_metadata: Option<property::Value<'static>>,
+        colorspace_bt2020_rgb: Option<bool>,
+    ) -> Result<(), Error> {
         let connector_props = self.connector_props.entry(conn).or_default();
         connector_props.insert("CRTC_ID", property::Value::CRTC(Some(crtc)));
+        if let Some(blob) = hdr_output_metadata {
+            connector_props.insert("HDR_OUTPUT_METADATA", blob);
+        }
+        if self.mapping.conn_prop_handle(conn, "Colorspace").is_ok()
+            && let Some(colorspace_bt2020_rgb) = colorspace_bt2020_rgb
+        {
+            connector_props.insert(
+                "Colorspace",
+                if colorspace_bt2020_rgb {
+                    property::Value::UnsignedRange(9)
+                } else {
+                    property::Value::UnsignedRange(0)
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1367,12 +1536,38 @@ impl<'a> AtomicRequest<'a> {
         }
     }
 
-    fn set_connector(&mut self, conn: connector::Handle, crtc: crtc::Handle) -> Result<(), Error> {
+    fn set_connector(
+        &mut self,
+        conn: connector::Handle,
+        crtc: crtc::Handle,
+        hdr_output_metadata: Option<property::Value<'static>>,
+        colorspace_bt2020_rgb: Option<bool>,
+    ) -> Result<(), Error> {
         self.request.add_property(
             conn,
             self.mapping.conn_prop_handle(conn, "CRTC_ID")?,
             property::Value::CRTC(Some(crtc)),
         );
+        if let Some(blob) = hdr_output_metadata {
+            self.request.add_property(
+                conn,
+                self.mapping.conn_prop_handle(conn, "HDR_OUTPUT_METADATA")?,
+                blob,
+            );
+        }
+        if self.mapping.conn_prop_handle(conn, "Colorspace").is_ok()
+            && let Some(colorspace_bt2020_rgb) = colorspace_bt2020_rgb
+        {
+            self.request.add_property(
+                conn,
+                self.mapping.conn_prop_handle(conn, "Colorspace")?,
+                if colorspace_bt2020_rgb {
+                    property::Value::UnsignedRange(9)
+                } else {
+                    property::Value::UnsignedRange(0)
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1643,6 +1838,8 @@ impl<'a> AtomicRequest<'a> {
         crtc: crtc::Handle,
         blob: Option<property::Value<'static>>,
         vrr: bool,
+        hdr_output_metadata: Option<property::Value<'static>>,
+        colorspace_bt2020_rgb: Option<bool>,
         connectors: impl IntoIterator<Item = &'a connector::Handle>,
         removed_connectors: impl IntoIterator<Item = &'a connector::Handle>,
         planes: impl IntoIterator<Item = &'a PlaneState<'a>>,
@@ -1654,7 +1851,7 @@ impl<'a> AtomicRequest<'a> {
 
         // for every connector that is new, we need to set our crtc_id
         for conn in connectors {
-            req.set_connector(*conn, crtc)?;
+            req.set_connector(*conn, crtc, hdr_output_metadata, colorspace_bt2020_rgb)?;
         }
 
         // for every connector that got removed, we need to set no crtc_id.

@@ -351,6 +351,41 @@ impl DrmSurface {
         }
     }
 
+    /// Returns if High Dynamic Range is advertised as supported by the given connector.
+    ///
+    /// Note: This will always return `false` if the underlying implementation is using the
+    /// legacy DRM api.
+    pub fn hdr_supported(&self, conn: connector::Handle) -> Result<bool, Error> {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.hdr_supported(conn),
+            DrmSurfaceInternal::Legacy(_) => Ok(false),
+        }
+    }
+
+    /// Returns whether the next frame state would set High Dynamic Range as enabled.
+    ///
+    /// Note: This will always return `false` if the underlying implementation is using the
+    /// legacy DRM api.
+    pub fn hdr_enabled(&self) -> bool {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.hdr_enabled(),
+            DrmSurfaceInternal::Legacy(_) => false,
+        }
+    }
+
+    /// Tries to set High Dynamic Range (HDR) for the next frame.
+    ///
+    /// Doing so might cause [`DrmSurface::commit_pending`] to return `true`.
+    pub fn use_hdr(&self, hdr: Option<drm_ffi::hdr_output_metadata>) -> Result<(), Error> {
+        match &*self.internal {
+            DrmSurfaceInternal::Atomic(surf) => surf.use_hdr(hdr),
+            DrmSurfaceInternal::Legacy(_) => Err(Error::UnknownProperty {
+                handle: self.crtc.into(),
+                name: "HDR_OUTPUT_METADATA",
+            }),
+        }
+    }
+
     /// Disables the given plane.
     ///
     /// Errors if the plane is not supported by this crtc or if the underlying
