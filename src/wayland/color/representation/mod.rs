@@ -1,6 +1,9 @@
-use wayland_server::{protocol::wl_surface::WlSurface, Dispatch, DisplayHandle, GlobalDispatch, Weak};
+use wayland_server::{Dispatch, DisplayHandle, GlobalDispatch, Weak, protocol::wl_surface::WlSurface};
 
-use crate::wayland::compositor::{self, Cacheable};
+use crate::wayland::{
+    GlobalData,
+    compositor::{self, Cacheable},
+};
 
 use wayland_protocols::wp::color_representation::v1::server::{
     wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
@@ -93,13 +96,13 @@ impl ColorRepresentationState {
         alpha_modes: impl Iterator<Item = AlphaMode>,
     ) -> ColorRepresentationState
     where
-        D: GlobalDispatch<WpColorRepresentationManagerV1, ()>
-            + Dispatch<WpColorRepresentationManagerV1, ()>
+        D: GlobalDispatch<WpColorRepresentationManagerV1, GlobalData>
+            + Dispatch<WpColorRepresentationManagerV1, GlobalData>
             + Dispatch<WpColorRepresentationSurfaceV1, Weak<WlSurface>>
             + ColorRepresentationHandler
             + 'static,
     {
-        dh.create_global::<D, WpColorRepresentationManagerV1, ()>(1, ());
+        dh.create_global::<D, WpColorRepresentationManagerV1, _>(1, GlobalData);
         ColorRepresentationState {
             coefficients_and_ranges: coefficients_and_ranges.collect(),
             chroma_locations: chroma_locations.collect(),
@@ -107,38 +110,4 @@ impl ColorRepresentationState {
             known_instances: Vec::new(),
         }
     }
-}
-
-/// Macro to delegate implementation of the wp color representation protocol
-#[macro_export]
-macro_rules! delegate_color_representation {
-    ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        const _: () = {
-            use $crate::{
-                reexports::{
-                    wayland_protocols::wp::color_representation::v1::server::{
-                        wp_color_representation_manager_v1::WpColorRepresentationManagerV1,
-                        wp_color_representation_surface_v1::WpColorRepresentationSurfaceV1,
-                    },
-                    wayland_server::{delegate_dispatch, delegate_global_dispatch, Weak, protocol::wl_surface::WlSurface},
-                },
-                wayland::color::representation::ColorRepresentationState
-            };
-
-            delegate_global_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorRepresentationManagerV1: ()] => ColorRepresentationState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorRepresentationManagerV1: ()] => ColorRepresentationState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorRepresentationSurfaceV1: Weak<WlSurface>] => ColorRepresentationState
-            );
-        };
-    };
 }

@@ -1,7 +1,10 @@
 use crate::{
     output::{Output, WeakOutput},
     utils::{SealedFile, user_data::UserDataMap},
-    wayland::compositor::{self, Cacheable, SurfaceData},
+    wayland::{
+        GlobalData,
+        compositor::{self, Cacheable, SurfaceData},
+    },
 };
 
 mod dispatch;
@@ -361,18 +364,18 @@ impl ColorManagementState {
         supported_primaries: impl Iterator<Item = Primaries>,
     ) -> ColorManagementState
     where
-        D: ColorManagementHandler
-            + GlobalDispatch<WpColorManagerV1, (), D>
-            + Dispatch<WpColorManagerV1, (), D>
-            + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-            + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-            + Dispatch<WpImageDescriptionV1, (), D>
-            + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-            + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-            + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-            + 'static,
+        D: ColorManagementHandler,
+        D: GlobalDispatch<WpColorManagerV1, GlobalData>,
+        D: Dispatch<WpColorManagerV1, GlobalData, D>,
+        D: Dispatch<WpColorManagementOutputV1, WeakOutput, D>,
+        D: Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>,
+        D: Dispatch<WpImageDescriptionV1, GlobalData, D>,
+        D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+        D: Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>,
+        D: Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>,
+        D: 'static,
     {
-        dh.create_global::<D, WpColorManagerV1, ()>(1, ());
+        dh.create_global::<D, WpColorManagerV1, _>(1, GlobalData);
         ColorManagementState {
             supported_rendering_intents: supported_rendering_intents.collect(),
             supported_features: supported_features.collect(),
@@ -541,81 +544,4 @@ impl TryInto<ImageDescriptionContents> for ImageDescriptionParametricBuilder {
             max_fall: self.max_fall,
         })
     }
-}
-
-/// Macro to delegate implementation of the wp color representation protocol
-#[macro_export]
-macro_rules! delegate_color_management {
-    ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        const _: () = {
-            use $crate::{
-                output::WeakOutput,
-                reexports::{
-                    wayland_protocols::wp::color_management::v1::server::{
-                        wp_color_management_output_v1::WpColorManagementOutputV1,
-                        wp_color_management_surface_v1::WpColorManagementSurfaceV1,
-                        wp_color_manager_v1::WpColorManagerV1,
-                        wp_color_management_surface_feedback_v1::WpColorManagementSurfaceFeedbackV1,
-                        wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1,
-                        wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1,
-                        wp_image_description_v1::WpImageDescriptionV1,
-                        wp_image_description_info_v1::WpImageDescriptionInfoV1
-                    },
-                    wayland_server::{delegate_dispatch, delegate_global_dispatch, Weak},
-                },
-                wayland::color::management::{ ColorManagementState, ImageDescriptionData, ImageDescriptionIccBuilder, ImageDescriptionParametricBuilder }
-            };
-            use std::sync::Mutex;
-
-            delegate_global_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorManagerV1: ()] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorManagerV1: ()] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorManagementOutputV1: WeakOutput] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorManagementSurfaceV1: Weak<WlSurface>] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpColorManagementSurfaceFeedbackV1: Weak<WlSurface>] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpImageDescriptionV1: ()] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpImageDescriptionV1: ImageDescriptionData] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpImageDescriptionInfoV1: ()] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpImageDescriptionCreatorIccV1: Mutex<Option<ImageDescriptionIccBuilder>>] => ColorManagementState
-            );
-
-            delegate_dispatch!(
-                $(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)?
-                $ty: [WpImageDescriptionCreatorParamsV1: Mutex<Option<ImageDescriptionParametricBuilder>>] => ColorManagementState
-            );
-        };
-    };
 }

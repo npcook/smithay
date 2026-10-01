@@ -4,13 +4,14 @@ use crate::{
     output::{Output, WeakOutput},
     utils::SealedFile,
     wayland::{
+        Dispatch2, GlobalData, GlobalDispatch2,
         color::management::{ImageDescriptionContents, Luminance, MasteringLuminance},
         compositor,
     },
 };
 
 use super::{
-    ColorManagementHandler, ColorManagementOutput, ColorManagementState, ColorManagementSurfaceCachedState,
+    ColorManagementHandler, ColorManagementOutput, ColorManagementSurfaceCachedState,
     ColorManagementSurfaceData, DescriptionError, IccData, ImageDescriptionData, ImageDescriptionIccBuilder,
     ImageDescriptionParametricBuilder, ParametricPrimaries, PrimariesEnum, TransferFunctionEnum,
 };
@@ -26,35 +27,25 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_image_description_v1::{self, WpImageDescriptionV1},
 };
 use wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
-    protocol::wl_surface::WlSurface,
+    Client, DataInit, Dispatch, DisplayHandle, New, Resource, WEnum, Weak, protocol::wl_surface::WlSurface,
 };
 
-impl<D> GlobalDispatch<WpColorManagerV1, (), D> for ColorManagementState
+impl<D> GlobalDispatch2<WpColorManagerV1, D> for GlobalData
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: Dispatch<WpColorManagerV1, GlobalData, D>,
+    D: 'static,
 {
     fn bind(
+        &self,
         state: &mut D,
         _dh: &DisplayHandle,
         _client: &Client,
         resource: New<WpColorManagerV1>,
-        _global_data: &(),
         data_init: &mut DataInit<'_, D>,
     ) {
         let state = state.color_management_state();
-        let instance = data_init.init(resource, ());
+        let instance = data_init.init(resource, GlobalData);
 
         for feature in &state.supported_features {
             instance.supported_feature(*feature);
@@ -72,27 +63,23 @@ where
     }
 }
 
-impl<D> Dispatch<WpColorManagerV1, (), D> for ColorManagementState
+impl<D> Dispatch2<WpColorManagerV1, D> for GlobalData
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: Dispatch<WpColorManagementOutputV1, WeakOutput, D>,
+    D: Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>,
+    D: Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>,
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+    D: Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>,
+    D: Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &WpColorManagerV1,
         request: wp_color_manager_v1::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -191,34 +178,25 @@ where
     }
 }
 
-impl<D> Dispatch<WpColorManagementOutputV1, WeakOutput, D> for ColorManagementState
+impl<D> Dispatch2<WpColorManagementOutputV1, D> for WeakOutput
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: Dispatch<WpImageDescriptionV1, GlobalData, D>,
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         _resource: &WpColorManagementOutputV1,
         request: wp_color_management_output_v1::Request,
-        data: &WeakOutput,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
         // println!("{:?}", request);
         match request {
             wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
-                if let Some(output) = data.upgrade() {
+                if let Some(output) = self.upgrade() {
                     let data = output.user_data().get::<ColorManagementOutput>().unwrap();
                     let info = data.description.lock().unwrap().clone();
                     let instance = data_init.init(
@@ -230,7 +208,7 @@ where
                     );
                     image_description_ready(&instance, info.0.id);
                 } else {
-                    let failed_desc = data_init.init(image_description, ());
+                    let failed_desc = data_init.init(image_description, GlobalData);
                     failed_desc.failed(
                         wp_image_description_v1::Cause::NoOutput,
                         "Output was destroyed".into(),
@@ -242,12 +220,12 @@ where
     }
 
     fn destroyed(
+        &self,
         _state: &mut D,
         _client: wayland_backend::server::ClientId,
         resource: &WpColorManagementOutputV1,
-        data: &WeakOutput,
     ) {
-        if let Some(output) = data.upgrade() {
+        if let Some(output) = self.upgrade() {
             if let Some(data) = output.user_data().get::<ColorManagementOutput>() {
                 data.remove_instance(resource);
             }
@@ -255,27 +233,17 @@ where
     }
 }
 
-impl<D> Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D> for ColorManagementState
+impl<D> Dispatch2<WpColorManagementSurfaceV1, D> for Weak<WlSurface>
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &WpColorManagementSurfaceV1,
         request: wp_color_management_surface_v1::Request,
-        data: &Weak<WlSurface>,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -286,7 +254,7 @@ where
                 image_description,
                 render_intent,
             } => {
-                if let Ok(surface) = data.upgrade() {
+                if let Ok(surface) = self.upgrade() {
                     if let Some(data) = image_description.data::<ImageDescriptionData>() {
                         compositor::with_states(&surface, |states| {
                             *states.cached_state.get().pending() = ColorManagementSurfaceCachedState {
@@ -327,7 +295,7 @@ where
                 }
             }
             Request::UnsetImageDescription => {
-                if let Ok(surface) = data.upgrade() {
+                if let Ok(surface) = self.upgrade() {
                     compositor::with_states(&surface, |states| {
                         *states.cached_state.get().pending() = ColorManagementSurfaceCachedState {
                             description: None,
@@ -345,12 +313,12 @@ where
     }
 
     fn destroyed(
+        &self,
         _state: &mut D,
         _client: wayland_backend::server::ClientId,
         resource: &WpColorManagementSurfaceV1,
-        data: &Weak<WlSurface>,
     ) {
-        if let Ok(surface) = data.upgrade() {
+        if let Ok(surface) = self.upgrade() {
             compositor::with_states(&surface, |states| {
                 if let Some(data) = states.data_map.get::<ColorManagementSurfaceData>() {
                     data.remove_instance(resource);
@@ -360,27 +328,18 @@ where
     }
 }
 
-impl<D> Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D> for ColorManagementState
+impl<D> Dispatch2<WpColorManagementSurfaceFeedbackV1, D> for Weak<WlSurface>
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: Dispatch<WpImageDescriptionV1, GlobalData, D>,
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         _resource: &WpColorManagementSurfaceFeedbackV1,
         request: wp_color_management_surface_feedback_v1::Request,
-        data: &Weak<WlSurface>,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -388,7 +347,7 @@ where
         use wp_color_management_surface_feedback_v1::Request;
         match request {
             Request::GetPreferred { image_description } => {
-                if let Ok(surface) = data.upgrade() {
+                if let Ok(surface) = self.upgrade() {
                     compositor::with_states(&surface, |states| {
                         let data = states.data_map.get::<ColorManagementSurfaceData>().unwrap();
                         let info = data.preferred.lock().unwrap().clone();
@@ -402,7 +361,7 @@ where
                         image_description_ready(&instance, info.0.id);
                     });
                 } else {
-                    let failed_desc = data_init.init(image_description, ());
+                    let failed_desc = data_init.init(image_description, GlobalData);
                     failed_desc.failed(
                         wp_image_description_v1::Cause::NoOutput,
                         "Surface was destroyed".into(),
@@ -410,7 +369,7 @@ where
                 }
             }
             Request::GetPreferredParametric { image_description } => {
-                if let Ok(surface) = data.upgrade() {
+                if let Ok(surface) = self.upgrade() {
                     compositor::with_states(&surface, |states| {
                         let data = states.data_map.get::<ColorManagementSurfaceData>().unwrap();
                         let info = data.preferred.lock().unwrap().clone();
@@ -425,7 +384,7 @@ where
                         todo!();
                     });
                 } else {
-                    let failed_desc = data_init.init(image_description, ());
+                    let failed_desc = data_init.init(image_description, GlobalData);
                     failed_desc.failed(
                         wp_image_description_v1::Cause::NoOutput,
                         "Surface was destroyed".into(),
@@ -438,12 +397,12 @@ where
     }
 
     fn destroyed(
+        &self,
         _state: &mut D,
         _client: wayland_backend::server::ClientId,
         resource: &WpColorManagementSurfaceFeedbackV1,
-        data: &Weak<WlSurface>,
     ) {
-        if let Ok(surface) = data.upgrade() {
+        if let Ok(surface) = self.upgrade() {
             compositor::with_states(&surface, |states| {
                 if let Some(data) = states.data_map.get::<ColorManagementSurfaceData>() {
                     data.remove_feedback_instance(resource);
@@ -453,27 +412,13 @@ where
     }
 }
 
-impl<D> Dispatch<WpImageDescriptionV1, (), D> for ColorManagementState
-where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
-{
+impl<D> Dispatch2<WpImageDescriptionV1, D> for GlobalData {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         resource: &WpImageDescriptionV1,
         request: wp_image_description_v1::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -486,27 +431,18 @@ where
     }
 }
 
-impl<D> Dispatch<WpImageDescriptionV1, ImageDescriptionData, D> for ColorManagementState
+impl<D> Dispatch2<WpImageDescriptionV1, D> for ImageDescriptionData
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpColorManagementSurfaceFeedbackV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + Dispatch<WpImageDescriptionInfoV1, (), D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: Dispatch<WpImageDescriptionInfoV1, GlobalData, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         resource: &WpImageDescriptionV1,
         request: wp_image_description_v1::Request,
-        data: &ImageDescriptionData,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -514,14 +450,14 @@ where
         use wp_image_description_v1::{Cause, Error, Request};
         match request {
             Request::GetInformation { information } => {
-                if !data.get_information {
+                if !self.get_information {
                     resource.post_error(Error::NoInformation, "Constructor doesn't allow get_information");
                     return;
                 }
 
-                let instance = data_init.init(information, ());
+                let instance = data_init.init(information, GlobalData);
 
-                match &data.info.0.contents {
+                match &self.info.0.contents {
                     super::ImageDescriptionContents::ICC(IccData { data, file }) => {
                         let mut file = file.lock().unwrap();
                         if file.is_none() {
@@ -600,10 +536,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: wayland_backend::server::ClientId,
         _resource: &WpImageDescriptionV1,
-        data: &ImageDescriptionData,
     ) {
         // println!("destroyed");
         state
@@ -611,57 +547,48 @@ where
             .known_image_descriptions
             .retain(|_, v| {
                 if let Some(v) = v.upgrade() {
-                    !std::sync::Arc::ptr_eq(&v, &data.info.0)
+                    !std::sync::Arc::ptr_eq(&v, &self.info.0)
                 } else {
                     false
                 }
             })
     }
 }
-impl<D> Dispatch<WpImageDescriptionInfoV1, (), D> for ColorManagementState
-where
-    D: Dispatch<WpImageDescriptionInfoV1, (), D> + 'static,
-{
+
+impl<D> Dispatch2<WpImageDescriptionInfoV1, D> for GlobalData {
     fn request(
+        &self,
         _state: &mut D,
         _client: &Client,
         _resource: &WpImageDescriptionInfoV1,
         _request: wp_image_description_info_v1::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
     }
 
     fn destroyed(
+        &self,
         _state: &mut D,
         _client: wayland_backend::server::ClientId,
         _resource: &WpImageDescriptionInfoV1,
-        _data: &(),
     ) {
     }
 }
 
-impl<D> Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-    for ColorManagementState
+impl<D> Dispatch2<WpImageDescriptionCreatorIccV1, D> for Mutex<Option<ImageDescriptionIccBuilder>>
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: Dispatch<WpImageDescriptionV1, GlobalData, D>,
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &WpImageDescriptionCreatorIccV1,
         request: wp_image_description_creator_icc_v1::Request,
-        data: &Mutex<Option<ImageDescriptionIccBuilder>>,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -673,7 +600,7 @@ where
                 offset,
                 length,
             } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -698,7 +625,7 @@ where
                 }
             }
             Request::Create { image_description } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.take() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -720,7 +647,7 @@ where
                             );
                             image_description_ready(&instance, desc.0.id);
                         } else {
-                            let instance = data_init.init(image_description, ());
+                            let instance = data_init.init(image_description, GlobalData);
                             instance.failed(
                                 wp_image_description_v1::Cause::Unsupported,
                                 "ICC file failed to parse".into(),
@@ -743,26 +670,18 @@ where
     }
 }
 
-impl<D> Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-    for ColorManagementState
+impl<D> Dispatch2<WpImageDescriptionCreatorParamsV1, D> for Mutex<Option<ImageDescriptionParametricBuilder>>
 where
-    D: ColorManagementHandler
-        + GlobalDispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagerV1, (), D>
-        + Dispatch<WpColorManagementOutputV1, WeakOutput, D>
-        + Dispatch<WpColorManagementSurfaceV1, Weak<WlSurface>, D>
-        + Dispatch<WpImageDescriptionV1, (), D>
-        + Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>
-        + Dispatch<WpImageDescriptionCreatorIccV1, Mutex<Option<ImageDescriptionIccBuilder>>, D>
-        + Dispatch<WpImageDescriptionCreatorParamsV1, Mutex<Option<ImageDescriptionParametricBuilder>>, D>
-        + 'static,
+    D: ColorManagementHandler,
+    D: Dispatch<WpImageDescriptionV1, ImageDescriptionData, D>,
+    D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &WpImageDescriptionCreatorParamsV1,
         request: wp_image_description_creator_params_v1::Request,
-        data: &Mutex<Option<ImageDescriptionParametricBuilder>>,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -771,7 +690,7 @@ where
         let color_state = state.color_management_state();
         match request {
             Request::SetTfNamed { tf } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -795,7 +714,7 @@ where
                 }
             }
             Request::SetTfPower { eexp } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -817,7 +736,7 @@ where
                 }
             }
             Request::SetPrimariesNamed { primaries } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -850,7 +769,7 @@ where
                 w_x,
                 w_y,
             } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     // println!("fail1");
                     resource.post_error(Error::AlreadySet, "Creator was already used");
@@ -885,7 +804,7 @@ where
                 w_x,
                 w_y,
             } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -913,7 +832,7 @@ where
                 }
             }
             Request::SetMasteringLuminance { min_lum, max_lum } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -944,7 +863,7 @@ where
                 }
             }
             Request::SetMaxCll { max_cll } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -956,7 +875,7 @@ where
                 }
             }
             Request::SetMaxFall { max_fall } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -972,7 +891,7 @@ where
                 max_lum,
                 reference_lum,
             } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.as_mut() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
@@ -1003,7 +922,7 @@ where
                 }
             }
             Request::Create { image_description } => {
-                let mut data_guard = data.lock().unwrap();
+                let mut data_guard = self.lock().unwrap();
                 let Some(data) = data_guard.take() else {
                     resource.post_error(Error::AlreadySet, "Creator was already used");
                     return;
